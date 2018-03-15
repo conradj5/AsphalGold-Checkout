@@ -1,0 +1,172 @@
+from atc import ATCThread
+from checkout import CheckoutDriver
+
+import time
+from sys import stdin
+import os
+from multiprocessing import Process
+from multiprocessing import Queue
+from threading import Thread
+import requests
+from bs4 import BeautifulSoup, SoupStrainer
+import json
+
+import urllib3
+
+get_time = lambda: int(round(time.time() * 1000))
+
+
+def run_checkout(queue, stdin):
+    try:
+        start = get_time()
+        co = CheckoutDriver(queue)
+        co.login('electriclimejwc@gmail.com', 'Tcbj5525!')
+        co.log.info("Waiting for cookie %dms" % (get_time() - start))
+        cookie = queue.get()
+        co.log.info("Received cookie: " + cookie)
+        co.driver.delete_all_cookies()
+        co.driver.add_cookie({'name': 'frontend', 'value': cookie})
+        start = get_time()
+        co.checkout()
+        co.log.info("Done Checking out %dms" % (get_time() - start))
+        stdin.readline()
+    finally:
+        co.driver.close()
+
+
+def run_atc_old(queue, stdin):
+    url = "https://asphaltgold.de/en/adidas-nmd-r1-stlt-pk-trace-olive-core-black-solar-slime.html"
+    size = "42"
+    session = requests.session()
+    session.headers.update({'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 \
+        (KHTML, like Gecko) Chrome/64.0.3282.186 Safari/537.36'})
+
+    item_page = session.get(url)
+    # print(item_page.content.decode())
+    start = get_time()
+    item_parse = BeautifulSoup(item_page.content, "lxml", parse_only=SoupStrainer(id='product_addtocart_form'))
+    form = item_parse.find('form')
+    select = form.find('select')
+    # find add url
+    action = form['action'].replace("checkout/cart", "ajax/index")
+    # form payload
+    payload = {'qty': '1', 'isAjax': '1'}
+    for item in form.find_all('input'):
+        payload[item['name']] = item['value']
+    for item in form.find(id='options_502').contents:
+        if item['data-simplesku'].split('-', 1)[-1]:
+            payload[select['name']] = item['id'].split('_')[-1]
+            break
+    print("Parsed - %dms" % (get_time() - start))
+
+    # stdin.readline()
+
+    start = get_time()
+    while True:
+        atc_resp = session.post(action, data=payload)
+        if json.loads(atc_resp.content)['status'] == 'SUCCESS':
+            break
+        else:
+            time.sleep(1)
+    print("Added - %dms" % (get_time() - start))
+    queue.put(session.cookies['frontend'])
+
+
+def run_atc(queue, url, size=None):
+    t = ATCThread(queue, url, size=size)
+    t.daemon = True
+    threads = [t]
+    with open('proxies.txt') as file:
+        for line in file:
+            t = ATCThread(queue, url, size=size, proxy=line)
+            t.daemon = True
+            t.start()
+    [thread.join() for thread in threads]
+
+
+if __name__ == "__main__":
+
+    proxies = {
+        'http': 'http://test:test@35.231.62.47:6666',
+        'https': 'http://test:test@35.231.62.47:6666',
+    }
+
+    # Create the session and set the proxies.
+    s = requests.Session()
+    s.proxies = proxies
+
+    # Make the HTTP request through the session.
+    r = s.get('http://www.showmemyip.com/')
+
+    # Check if the proxy was indeed used (the text should contain the proxy IP).
+    print(r.text)
+
+    queue = Queue()
+    num_atc_threads = 3
+    url = 'https://asphaltgold.de/en/sneaker/new/vans-old-skool-36-dx-anaheim-factory-black-og-burgundy.html'
+    size = '46'
+    newstdin = os.fdopen(os.dup(stdin.fileno()))
+    try:
+        # co_proc = Process(target=run_checkout, args=[queue, newstdin])
+        atc_proc = Process(target=run_atc, args=[queue, url, size])
+
+        # co_proc.start()
+        atc_proc.start()
+
+        # co_proc.join()
+        atc_proc.join()
+    finally:
+        os.close(newstdin.fileno())
+
+    print("DONE")
+
+
+
+""" manual requests for checkout
+    payload = [
+        ('billing[firstname]', 'Jonathan'),
+        ('billing[lastname]', 'Conrad'),
+        ('billing[email]', 'jonathan.w.conrad@gmail.com'),
+        ('billing[telephone]', '6107011362'),
+        ('billing[company]', ''),
+        ('billing[street][]', 'East Stewart Street'),
+        ('billing[street][]', '326'),
+        ('billing[street][]', ''),
+        ('billing[postcode]', '45409'),
+        ('billing[city]', 'Dayton'),
+        ('billing[region_id]', '47'),
+        ('billing[region]', ''),
+        ('billing[country_id]', 'US'),
+        ('billing[customer_password]', ''),
+        ('billing[confirm_password]', ''),
+        ('billing[save_in_address_book]', '1'),
+        ('billing[use_for_shipping]', '1'),
+        ('shipping[firstname]', 'Jonathan'),
+        ('shipping[lastname]', 'Conrad'),
+        ('shipping[telephone]', '6107011362'),
+        ('shipping[company]', ''),
+        ('shipping[street][]', 'East Stewart Street'),
+        ('shipping[street][]', '326'),
+        ('shipping[street][]', ''),
+        ('shipping[postcode]', '45409'),
+        ('shipping[city]', 'Dayton'),
+        ('shipping[region_id]', '47'),
+        ('shipping[region]', ''),
+        ('shipping[country_id]', 'US'),
+        ('shipping[save_in_address_book]', '1'),
+        ('shipping[address_id]', '3451580'),
+        ('shipping_method', 'premiumrate_UPS_Express'),
+        ('payment[method]', 'telecashipg_creditcard'),
+        ('onestepcheckout-couponcode', ''),
+        ('onestepcheckout_comments', ''),
+        ('agreement[4]', '1'),
+        ('agreement[5]', '1'),
+    ]
+    headers = {
+        'Referer': 'https://asphaltgold.de/en/onestepcheckout/',
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/64.0.3282.186 Safari/537.36',
+        'Origin': 'https://asphaltgold.de'
+    }
+"""
+
+
